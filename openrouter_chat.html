@@ -1,0 +1,603 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Claude-Style Chat UI (Dark)</title>
+    
+    <!-- Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+    
+    <!-- Tailwind CSS (via CDN) -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['"Inter"', 'system-ui', 'sans-serif'],
+                        serif: ['ui-serif', 'Georgia', 'Cambria', '"Times New Roman"', 'Times', 'serif'],
+                    },
+                    colors: {
+                        claude: {
+                            bg: '#1A1816',
+                            sidebar: '#24211E',
+                            text: '#E8E4D9',
+                            muted: '#969085',
+                            border: '#3D3833',
+                            accent: '#D97A5D',
+                            input: '#24211E',
+                            hover: '#2E2A27'
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+
+    <!-- React & ReactDOM -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+
+    <style>
+        body { 
+            background-color: #1A1816; 
+            color: #E8E4D9; 
+            margin: 0;
+            overflow: hidden;
+            -webkit-font-smoothing: antialiased;
+        }
+        
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #3D3833; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #4a443e; }
+
+        .markdown { font-size: 1.05rem; line-height: 1.6; }
+        .markdown p { margin-bottom: 1.2em; }
+        .markdown p:last-child { margin-bottom: 0; }
+        .markdown a { color: #D97A5D; text-decoration: underline; text-underline-offset: 4px; }
+        
+        .markdown pre { 
+            background: #0f0e0d; 
+            color: #E8E4D9;
+            padding: 16px; 
+            border-radius: 8px; 
+            overflow-x: auto; 
+            margin: 1.5em 0; 
+            font-size: 0.9em;
+            border: 1px solid #3D3833;
+            padding-top: 36px;
+        }
+        .markdown code { 
+            background: #24211E; 
+            color: #D97A5D;
+            padding: 2px 6px; 
+            border-radius: 4px; 
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; 
+            font-size: 0.9em; 
+        }
+        .markdown pre code { background: transparent; color: inherit; padding: 0; }
+
+        .markdown ul { list-style-type: disc; padding-left: 1.5em; margin-bottom: 1.2em; }
+        .markdown ol { list-style-type: decimal; padding-left: 1.5em; margin-bottom: 1.2em; }
+        .markdown li { margin-bottom: 0.5em; }
+        
+        .typing-dot { animation: typing 1.4s infinite ease-in-out both; }
+        .typing-dot:nth-child(1) { animation-delay: -0.32s; }
+        .typing-dot:nth-child(2) { animation-delay: -0.16s; }
+        @keyframes typing {
+            0%, 80%, 100% { transform: scale(0); opacity: 0.3; }
+            40% { transform: scale(1); opacity: 1; }
+        }
+
+        html, body { overscroll-behavior-y: none; }
+    </style>
+</head>
+<body>
+
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef } = React;
+
+        const App = () => {
+            const [sidebarOpen, setSidebarOpen] = useState(false);
+            
+            // App state
+            const [apiKey, setApiKey] = useState(() => localStorage.getItem('dolphin_api_key') || '');
+            const [model, setModel] = useState(() => localStorage.getItem('dolphin_model') || 'cognitivecomputations/dolphin-mistral-24b-venice-edition');
+            const [systemPrompt, setSystemPrompt] = useState(() => localStorage.getItem('dolphin_prompt') || 'You are Dolphin, a helpful and highly intelligent assistant.');
+            
+            // Save settings automatically
+            useEffect(() => localStorage.setItem('dolphin_api_key', apiKey), [apiKey]);
+            useEffect(() => localStorage.setItem('dolphin_model', model), [model]);
+            useEffect(() => localStorage.setItem('dolphin_prompt', systemPrompt), [systemPrompt]);
+
+            // Chat History state
+            const [chatSessions, setChatSessions] = useState(() => {
+                const saved = localStorage.getItem('dolphin_chat_sessions');
+                if (saved) {
+                    try { return JSON.parse(saved); } catch(e) {}
+                }
+                return [];
+            });
+
+            const [currentChatId, setCurrentChatId] = useState(() => {
+                const saved = localStorage.getItem('dolphin_chat_sessions');
+                if (saved) {
+                    try {
+                        const parsed = JSON.parse(saved);
+                        if (parsed.length > 0) return parsed[0].id;
+                    } catch(e) {}
+                }
+                return Date.now().toString();
+            });
+
+            const [messages, setMessages] = useState(() => {
+                const saved = localStorage.getItem('dolphin_chat_sessions');
+                if (saved) {
+                    try {
+                        const parsed = JSON.parse(saved);
+                        if (parsed.length > 0) return parsed[0].messages;
+                    } catch(e) {}
+                }
+                return [];
+            });
+
+            const [input, setInput] = useState('');
+            const [isTyping, setIsTyping] = useState(false);
+            const [error, setError] = useState(null);
+            
+            const [editingIdx, setEditingIdx] = useState(null);
+            const [editValue, setEditValue] = useState('');
+            
+            const messagesEndRef = useRef(null);
+            const inputRef = useRef(null);
+
+            // Save chat sessions whenever messages change
+            useEffect(() => {
+                if (messages.length === 0 && chatSessions.findIndex(s => s.id === currentChatId) === -1) {
+                    return; // Don't save empty chats that aren't already in history
+                }
+
+                setChatSessions(prev => {
+                    const existingIdx = prev.findIndex(s => s.id === currentChatId);
+                    
+                    let title = "Empty Chat";
+                    if (messages.length > 0) {
+                        title = messages[0].content;
+                        if (title.length > 35) title = title.substring(0, 35) + '...';
+                    }
+
+                    const newSession = {
+                        id: currentChatId,
+                        title: title,
+                        messages: messages,
+                        updatedAt: Date.now()
+                    };
+
+                    let updated;
+                    if (existingIdx >= 0) {
+                        updated = [...prev];
+                        updated[existingIdx] = newSession;
+                        updated.sort((a, b) => b.updatedAt - a.updatedAt);
+                    } else {
+                        updated = [newSession, ...prev];
+                    }
+
+                    localStorage.setItem('dolphin_chat_sessions', JSON.stringify(updated));
+                    return updated;
+                });
+            }, [messages, currentChatId]);
+
+            useEffect(() => { 
+                messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); 
+                
+                const preElements = document.querySelectorAll('.markdown pre');
+                preElements.forEach(pre => {
+                    if (!pre.hasAttribute('data-initialized')) {
+                        pre.setAttribute('data-initialized', 'true');
+                        pre.setAttribute('contenteditable', 'true');
+                        pre.style.outline = 'none';
+                        pre.style.position = 'relative';
+
+                        const btn = document.createElement('button');
+                        btn.className = 'copy-btn';
+                        btn.innerHTML = 'Copy';
+                        btn.contentEditable = 'false';
+                        
+                        btn.style.position = 'absolute';
+                        btn.style.top = '8px';
+                        btn.style.right = '8px';
+                        btn.style.background = '#3D3833';
+                        btn.style.color = '#E8E4D9';
+                        btn.style.border = 'none';
+                        btn.style.padding = '4px 10px';
+                        btn.style.borderRadius = '4px';
+                        btn.style.fontSize = '12px';
+                        btn.style.cursor = 'pointer';
+                        btn.style.zIndex = '10';
+                        btn.style.fontFamily = 'Inter, sans-serif';
+                        
+                        btn.onclick = (e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            
+                            const clone = pre.cloneNode(true);
+                            const btnClone = clone.querySelector('.copy-btn');
+                            if (btnClone) clone.removeChild(btnClone);
+                            
+                            navigator.clipboard.writeText(clone.innerText.trim());
+                            
+                            btn.innerHTML = 'Copied!';
+                            btn.style.background = '#D97A5D';
+                            setTimeout(() => {
+                                btn.innerHTML = 'Copy';
+                                btn.style.background = '#3D3833';
+                            }, 2000);
+                        };
+                        
+                        pre.appendChild(btn);
+                        
+                        pre.addEventListener('keydown', (e) => {
+                            e.stopPropagation();
+                        });
+                    }
+                });
+            }, [messages, isTyping]);
+
+            useEffect(() => {
+                if (inputRef.current) {
+                    inputRef.current.style.height = '52px';
+                    inputRef.current.style.height = Math.min(inputRef.current.scrollHeight, 200) + 'px';
+                }
+            }, [input]);
+
+            useEffect(() => { if (window.lucide) window.lucide.createIcons(); });
+
+            const startNewChat = () => {
+                setCurrentChatId(Date.now().toString());
+                setMessages([]);
+                setError(null);
+                setEditingIdx(null);
+                setSidebarOpen(false);
+            };
+
+            const loadChat = (id) => {
+                const session = chatSessions.find(s => s.id === id);
+                if (session) {
+                    setCurrentChatId(id);
+                    setMessages(session.messages);
+                    setError(null);
+                    setEditingIdx(null);
+                    setSidebarOpen(false);
+                }
+            };
+
+            const deleteChat = (e, id) => {
+                e.stopPropagation();
+                const updated = chatSessions.filter(s => s.id !== id);
+                setChatSessions(updated);
+                localStorage.setItem('dolphin_chat_sessions', JSON.stringify(updated));
+                
+                if (currentChatId === id) {
+                    if (updated.length > 0) {
+                        setCurrentChatId(updated[0].id);
+                        setMessages(updated[0].messages);
+                    } else {
+                        startNewChat();
+                    }
+                }
+            };
+
+            const performChat = async (history) => {
+                setIsTyping(true);
+                setError(null);
+                
+                let context = [];
+                if (systemPrompt.trim()) context.push({ role: 'system', content: systemPrompt.trim() });
+                context = [...context, ...history];
+                
+                try {
+                    const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+                        method: 'POST',
+                        headers: { 
+                            'Authorization': `Bearer ${apiKey.trim()}`, 
+                            'HTTP-Referer': window.location.href,
+                            'X-Title': 'Dolphin Chat UI',
+                            'Content-Type': 'application/json' 
+                        },
+                        body: JSON.stringify({ model, messages: context })
+                    });
+                    const data = await res.json();
+                    
+                    if (res.ok && data.choices) {
+                        setMessages([...history, { role: 'assistant', content: data.choices[0].message.content }]);
+                    } else {
+                        setError(data.error?.message || 'API Error');
+                        setMessages([...history, { role: 'assistant', content: 'Apologies, but an error occurred with the API.' }]);
+                    }
+                } catch (err) {
+                    setError('Network Error.');
+                    setMessages([...history, { role: 'assistant', content: 'Apologies, but I am unable to connect to the network.' }]);
+                } finally {
+                    setIsTyping(false);
+                }
+            };
+
+            const sendMessage = () => {
+                if (!input.trim() || !apiKey.trim() || isTyping) {
+                    if (!apiKey.trim()) setError('API Key is required.');
+                    return;
+                }
+                const userText = input.trim();
+                setInput('');
+                const newHistory = [...messages, { role: 'user', content: userText }];
+                setMessages(newHistory);
+                performChat(newHistory);
+            };
+
+            const handleKeyDown = (e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    sendMessage();
+                }
+            };
+
+            const startEdit = (idx, content) => {
+                setEditingIdx(idx);
+                setEditValue(content);
+            };
+
+            const saveEditAndResend = (idx) => {
+                if (!editValue.trim() || !apiKey.trim() || isTyping) return;
+                const newText = editValue.trim();
+                setEditingIdx(null);
+                
+                const newHistory = [...messages.slice(0, idx), { role: 'user', content: newText }];
+                setMessages(newHistory);
+                performChat(newHistory);
+            };
+
+            const SparkleIcon = () => (
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className="w-5 h-5 text-claude-accent">
+                    <path d="M11.6698 2.00015C11.8384 1.83152 12.1616 1.83152 12.3302 2.00015C13.238 2.90795 14.123 4.67389 14.8696 6.89069C15.6175 9.11145 16.1953 11.6703 16.5165 14.1678C19.014 14.4891 21.5729 15.0669 23.7936 15.8148C26.0104 16.5613 27.7764 17.4463 28.6842 18.3541C28.8528 18.5228 28.8528 18.8459 28.6842 19.0146C27.7764 19.9224 26.0104 20.8073 23.7936 21.5539C21.5729 22.3018 19.014 22.8796 16.5165 23.2009C16.1953 25.6984 15.6175 28.2573 14.8696 30.478C14.123 32.6948 13.238 34.5808 12.3302 35.4886C12.1616 35.6572 11.8384 35.6572 11.6698 35.4886C10.762 34.5808 9.87702 32.6948 9.13042 30.478C8.38252 28.2573 7.80472 25.6984 7.48347 23.2009C4.98599 22.8796 2.42712 22.3018 0.20635 21.5539C-0.965415 20.8073 -2.73136 19.9224 -3.63916 19.0146C-3.80779 18.8459 -3.80779 18.5228 -3.63916 18.3541C-2.73136 17.4463 -0.965415 16.5613 0.20635 15.8148C2.42712 15.0669 4.98599 14.4891 7.48347 14.1678C7.80472 11.6703 8.38252 9.11145 9.13042 6.89069C9.87702 4.67389 10.762 2.90795 11.6698 2.00015Z" fill="currentColor" transform="scale(0.6) translate(3, 4)"/>
+                </svg>
+            );
+
+            return (
+                <div className="flex h-screen text-claude-text font-sans bg-claude-bg">
+                    
+                    {sidebarOpen && <div className="fixed inset-0 bg-black/50 z-20 md:hidden" onClick={() => setSidebarOpen(false)}/>}
+
+                    <aside className={`
+                        fixed md:static inset-y-0 left-0 z-30 w-64 bg-claude-sidebar border-r border-claude-border flex flex-col p-3 transition-transform duration-300 ease-out
+                        ${sidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}
+                    `}>
+                        <div className="flex items-center justify-between mb-4 md:hidden">
+                            <span className="font-serif text-lg text-claude-text pl-2">Settings</span>
+                            <button onClick={() => setSidebarOpen(false)} className="p-1 text-claude-muted hover:text-claude-text">
+                                <i data-lucide="x" className="w-5 h-5"></i>
+                            </button>
+                        </div>
+
+                        <button 
+                            onClick={startNewChat}
+                            className="flex items-center gap-2 w-full py-2 px-3 rounded-md hover:bg-claude-hover transition-colors text-sm font-medium mb-4 border border-claude-border bg-claude-input shrink-0"
+                        >
+                            <i data-lucide="plus" className="w-4 h-4 text-claude-accent"></i>
+                            New Conversation
+                        </button>
+
+                        <div className="flex-1 overflow-y-auto pr-1 flex flex-col">
+                            
+                            <div className="mb-6">
+                                <div className="text-[10px] text-claude-muted font-bold uppercase tracking-wider pl-1 mb-2">History</div>
+                                {chatSessions.length === 0 ? (
+                                    <div className="text-xs text-claude-muted pl-1 italic">No recent chats</div>
+                                ) : (
+                                    <div className="space-y-1">
+                                        {chatSessions.map(session => (
+                                            <div 
+                                                key={session.id} 
+                                                onClick={() => loadChat(session.id)}
+                                                className={`group flex items-center justify-between p-2 rounded-md cursor-pointer transition-colors text-sm ${currentChatId === session.id ? 'bg-claude-input border border-claude-border font-medium text-claude-text' : 'hover:bg-claude-hover border border-transparent text-claude-muted'}`}
+                                            >
+                                                <div className="truncate pr-2">{session.title}</div>
+                                                <button 
+                                                    onClick={(e) => deleteChat(e, session.id)} 
+                                                    className="text-claude-muted hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
+                                                >
+                                                    <i data-lucide="trash-2" className="w-3.5 h-3.5"></i>
+                                                </button>
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
+
+                            <div className="mt-auto pt-4 border-t border-claude-border space-y-5 pb-2">
+                                <div className="text-[10px] text-claude-muted font-bold uppercase tracking-wider pl-1 -mb-2">Configuration</div>
+                                <div className="flex flex-col gap-1.5">
+                                    <label className="text-[11px] text-claude-muted font-medium pl-1">API Key</label>
+                                    <input 
+                                        type="password" 
+                                        value={apiKey}
+                                        onChange={e => setApiKey(e.target.value)}
+                                        placeholder="sk-or-v1-..."
+                                        className="w-full bg-claude-input border border-claude-border rounded-md px-3 py-1.5 text-sm focus:border-claude-accent focus:ring-1 focus:ring-claude-accent transition-all outline-none"
+                                    />
+                                    {error && <span className="text-red-400 text-xs pl-1 font-medium">{error}</span>}
+                                </div>
+
+                                <div className="flex flex-col gap-1.5">
+                                    <label className="text-[11px] text-claude-muted font-medium pl-1">Model</label>
+                                    <select 
+                                        value={model}
+                                        onChange={e => setModel(e.target.value)}
+                                        className="w-full bg-claude-input border border-claude-border rounded-md px-3 py-1.5 text-sm focus:border-claude-accent focus:ring-1 focus:ring-claude-accent transition-all outline-none appearance-none"
+                                    >
+                                        <optgroup label="Uncensored / Open" className="bg-claude-bg">
+                                            <option value="cognitivecomputations/dolphin-mistral-24b-venice-edition">Dolphin Mistral 24B</option>
+                                            <option value="nousresearch/hermes-3-llama-3.1-405b">Hermes 3 (405B)</option>
+                                        </optgroup>
+                                        <optgroup label="Free Models" className="bg-claude-bg">
+                                            <option value="google/gemini-pro:free">Gemini Pro (Free)</option>
+                                            <option value="qwen/qwen3.8-27b:free">Qwen 3.8 (Free)</option>
+                                        </optgroup>
+                                    </select>
+                                </div>
+
+                                <div className="flex flex-col gap-1.5">
+                                    <label className="text-[11px] text-claude-muted font-medium pl-1">System Instructions</label>
+                                    <textarea 
+                                        value={systemPrompt}
+                                        onChange={e => setSystemPrompt(e.target.value)}
+                                        className="w-full bg-claude-input border border-claude-border rounded-md px-3 py-2 text-sm focus:border-claude-accent focus:ring-1 focus:ring-claude-accent transition-all outline-none resize-y min-h-[60px]"
+                                    />
+                                </div>
+                            </div>
+                        </div>
+                    </aside>
+
+                    {/* Main Chat Area */}
+                    <main className="flex-1 flex flex-col relative w-full h-full bg-claude-bg">
+                        
+                        {/* Mobile Header */}
+                        <header className="md:hidden flex items-center justify-between p-3 border-b border-claude-border bg-claude-bg z-10 sticky top-0">
+                            <button onClick={() => setSidebarOpen(true)} className="p-2 -ml-2 text-claude-muted">
+                                <i data-lucide="menu" className="w-6 h-6"></i>
+                            </button>
+                            <span className="font-serif text-lg">Dolphin</span>
+                            <button onClick={startNewChat} className="p-2 -mr-2 text-claude-muted">
+                                <i data-lucide="plus" className="w-5 h-5 text-claude-accent"></i>
+                            </button>
+                        </header>
+
+                        {/* Chat History */}
+                        <div className="flex-1 overflow-y-auto pb-[150px] md:pb-[180px]">
+                            {messages.length === 0 ? (
+                                <div className="h-full flex flex-col items-center justify-center p-6 text-center">
+                                    <div className="w-16 h-16 bg-claude-sidebar rounded-2xl flex items-center justify-center mb-6 shadow-sm border border-claude-border">
+                                        <SparkleIcon />
+                                    </div>
+                                    <h2 className="text-3xl font-serif text-claude-text mb-3">Good morning</h2>
+                                    <p className="max-w-md text-claude-muted font-light text-sm">How can I help you today?</p>
+                                </div>
+                            ) : (
+                                <div className="py-8">
+                                    {messages.map((msg, idx) => (
+                                        <div key={idx} className="w-full mb-8">
+                                            <div className="max-w-3xl mx-auto flex gap-4 md:gap-6 px-4 md:px-6">
+                                                
+                                                <div className="shrink-0 pt-1">
+                                                    {msg.role === 'user' ? (
+                                                        <div className="w-8 h-8 rounded bg-claude-sidebar flex items-center justify-center text-sm font-medium border border-claude-border">U</div>
+                                                    ) : (
+                                                        <div className="w-8 h-8 rounded bg-claude-accent/20 flex items-center justify-center">
+                                                            <SparkleIcon />
+                                                        </div>
+                                                    )}
+                                                </div>
+
+                                                <div className="flex-1 min-w-0">
+                                                    {msg.role === 'user' && editingIdx === idx ? (
+                                                        <div className="w-full">
+                                                            <textarea 
+                                                                value={editValue}
+                                                                onChange={(e) => setEditValue(e.target.value)}
+                                                                className="w-full bg-claude-input border border-claude-border rounded-md p-3 text-claude-text outline-none focus:border-claude-accent resize-y min-h-[100px]"
+                                                            />
+                                                            <div className="flex gap-2 mt-2">
+                                                                <button onClick={() => saveEditAndResend(idx)} className="px-4 py-1.5 bg-claude-accent text-white rounded-md text-sm hover:opacity-90 font-medium">Save & Submit</button>
+                                                                <button onClick={() => setEditingIdx(null)} className="px-4 py-1.5 bg-claude-sidebar text-claude-text border border-claude-border rounded-md text-sm hover:bg-claude-hover">Cancel</button>
+                                                            </div>
+                                                        </div>
+                                                    ) : (
+                                                        <div className="relative group">
+                                                            <div className="markdown"
+                                                                dangerouslySetInnerHTML={{ 
+                                                                    __html: msg.role === 'assistant' 
+                                                                        ? window.marked.parse(msg.content) 
+                                                                        : msg.content.replace(/\n/g, '<br>')
+                                                                }} 
+                                                            />
+                                                            
+                                                            {msg.role === 'user' && (
+                                                                <button 
+                                                                    onClick={() => startEdit(idx, msg.content)}
+                                                                    className="absolute -right-10 top-0 p-2 text-claude-muted hover:text-claude-text opacity-0 group-hover:opacity-100 transition-opacity"
+                                                                    title="Edit message"
+                                                                >
+                                                                    <i data-lucide="edit-2" className="w-4 h-4"></i>
+                                                                </button>
+                                                            )}
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        </div>
+                                    ))}
+                                    
+                                    {isTyping && (
+                                        <div className="w-full mb-8">
+                                            <div className="max-w-3xl mx-auto flex gap-4 md:gap-6 px-4 md:px-6">
+                                                <div className="shrink-0 pt-1">
+                                                    <div className="w-8 h-8 rounded bg-claude-accent/20 flex items-center justify-center">
+                                                        <SparkleIcon />
+                                                    </div>
+                                                </div>
+                                                <div className="flex-1 pt-2 flex gap-1">
+                                                    <span className="w-2 h-2 bg-claude-accent/80 rounded-full typing-dot"></span>
+                                                    <span className="w-2 h-2 bg-claude-accent/80 rounded-full typing-dot"></span>
+                                                    <span className="w-2 h-2 bg-claude-accent/80 rounded-full typing-dot"></span>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+                            <div ref={messagesEndRef} className="h-4" />
+                        </div>
+
+                        {/* Input Area */}
+                        <div className="absolute bottom-0 left-0 w-full bg-gradient-to-t from-claude-bg via-claude-bg to-transparent pt-12 pb-6 px-4 md:px-8 z-10">
+                            <div className="max-w-3xl mx-auto relative">
+                                <div className="relative bg-claude-input border border-claude-border rounded-xl shadow-lg focus-within:border-claude-muted transition-colors">
+                                    <textarea
+                                        ref={inputRef}
+                                        value={input}
+                                        onChange={e => setInput(e.target.value)}
+                                        onKeyDown={handleKeyDown}
+                                        placeholder="How can I help you today?"
+                                        className="w-full bg-transparent text-claude-text placeholder-claude-muted py-4 pl-4 pr-14 text-[15px] resize-none outline-none max-h-[200px]"
+                                        style={{ height: '52px' }}
+                                    />
+                                    <button 
+                                        onClick={sendMessage}
+                                        disabled={!input.trim() || isTyping}
+                                        className={`absolute right-2 bottom-2 w-8 h-8 flex items-center justify-center rounded-lg transition-colors ${input.trim() && !isTyping ? 'bg-claude-accent text-white hover:opacity-90' : 'bg-claude-sidebar text-claude-muted'}`}
+                                    >
+                                        <i data-lucide="arrow-up" className="w-4 h-4"></i>
+                                    </button>
+                                </div>
+                                <div className="text-center text-xs text-claude-muted mt-3">
+                                    Claude can make mistakes. Please verify important information.
+                                </div>
+                            </div>
+                        </div>
+                    </main>
+
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
